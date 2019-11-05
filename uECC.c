@@ -1,5 +1,4 @@
 /* Copyright 2014, Kenneth MacKay. Licensed under the BSD 2-clause license. */
-
 #include "uECC.h"
 #include "uECC_vli.h"
 
@@ -1525,31 +1524,52 @@ int uECC_verify(const uint8_t *public_key,
     points[1] = curve->G;
     points[2] = _public;
     points[3] = sum;
-    num_bits = smax(uECC_vli_numBits(u1, num_n_words),
-                    uECC_vli_numBits(u2, num_n_words));
 
-    point = points[(!!uECC_vli_testBit(u1, num_bits - 1)) |
-                   ((!!uECC_vli_testBit(u2, num_bits - 1)) << 1)];
-    uECC_vli_set(rx, point, num_words);
-    uECC_vli_set(ry, point + num_words, num_words);
-    uECC_vli_clear(z, num_words);
-    z[0] = 1;
-
-    for (i = num_bits - 2; i >= 0; --i) {
+	/* Start R point at O {0,0,0} */
+	int isZero = 1;
+    for (i = curve->num_n_bits - 1; i >= 0; --i) {
         uECC_word_t index;
-        curve->double_jacobian(rx, ry, z, curve);
+		if (!isZero)
+			curve->double_jacobian(rx, ry, z, curve);
 
         index = (!!uECC_vli_testBit(u1, i)) | ((!!uECC_vli_testBit(u2, i)) << 1);
         point = points[index];
         if (point) {
-            uECC_vli_set(tx, point, num_words);
-            uECC_vli_set(ty, point + num_words, num_words);
-            apply_z(tx, ty, z, curve);
-            uECC_vli_modSub(tz, rx, tx, curve->p, num_words); /* Z = x2 - x1 */
-            XYcZ_add(tx, ty, rx, ry, curve);
-            uECC_vli_modMult_fast(z, z, tz, curve);
+			if (isZero) {
+				// R = point
+				uECC_vli_set(rx, point, num_words);
+				uECC_vli_set(ry, point + num_words, num_words);
+				// z = 1
+				uECC_vli_clear(z, num_words);
+				z[0] = 1;
+				isZero = 0;
+			}
+			else {
+				uECC_vli_set(tx, point, num_words);
+				uECC_vli_set(ty, point + num_words, num_words);
+				apply_z(tx, ty, z, curve);
+				uECC_vli_modSub(tz, rx, tx, curve->p, num_words); /* Z = x2 - x1 */
+				// tz == 0 when x2 == x1 
+				// if( y2 == y1 ) (the same point) 
+				//		point double 
+				// if( y2 != y1 )  
+				//		y2 = -y1 (mod p)
+				//		y2 + y1 = 0	(mod p)
+				//		point_add( p1, p2 ) = O {0,0}
+				if (uECC_vli_isZero(tz, num_words)) {
+					isZero = !uECC_vli_equal(ry, ty, num_words);
+					if (!isZero)
+						curve->double_jacobian(rx, ry, z, curve);
+				}
+				else {
+					XYcZ_add(tx, ty, rx, ry, curve);
+					uECC_vli_modMult_fast(z, z, tz, curve);
+				}
+			}
         }
     }
+
+	if (isZero) return 0;
 
     uECC_vli_modInv(z, z, curve->p, num_words); /* Z = 1/Z */
     apply_z(rx, ry, z, curve);
